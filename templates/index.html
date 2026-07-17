@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notre-Dame de la Sainte-Croix de Saignes-en-Padaine — {{ t.title_suffix }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="hdr-left">
+    <img src="/static/logo.svg" alt="Notre-Dame de la Sainte-Croix de Saignes-en-Padaine" class="hdr-logo">
+    <span id="subtitle">{{ t.subtitle }}</span>
+  </div>
+  <span id="city-name" class="hdr-city"></span>
+  <div class="hdr-right">
+    <span id="demo-badge" class="badge hidden">DEMO</span>
+    <button id="refresh-btn" class="icon-btn" type="button" aria-label="{{ t.refresh_title }}" title="{{ t.refresh_title }}">
+      <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24">
+        <path d="M0 0h24v24H0z" fill="none" />
+        <path fill="currentColor" d="M12 20q-3.35 0-5.675-2.325T4 12t2.325-5.675T12 4q1.725 0 3.3.712T18 6.75V4h2v7h-7V9h4.2q-.8-1.4-2.187-2.2T12 6Q9.5 6 7.75 7.75T6 12t1.75 4.25T12 18q1.925 0 3.475-1.1T17.65 14h2.1q-.7 2.65-2.85 4.325T12 20" />
+      </svg>
+    </button>
+    <button id="config-btn" class="icon-btn" type="button" aria-label="{{ t.config_title }}" title="{{ t.config_title }}">
+      <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24">
+        <path d="M0 0h24v24H0z" fill="none" />
+        <path fill="currentColor" d="M3 20v-2h2.75l-.4-.35q-1.3-1.15-1.825-2.625T3 12.05q0-2.775 1.662-4.938T9 4.25v2.1Q7.2 7 6.1 8.563T5 12.05q0 1.125.425 2.188T6.75 16.2l.25.25V14h2v6zm17.925-9H18.9q-.125-.875-.537-1.675T17.25 7.8L17 7.55V10h-2V4h6v2h-2.75l.4.35q1.025 1.05 1.575 2.225t.7 2.425M17 23l-.3-1.5q-.3-.125-.562-.262T15.6 20.9l-1.45.45l-1-1.7l1.15-1q-.05-.35-.05-.65t.05-.65l-1.15-1l1-1.7l1.45.45q.275-.2.538-.337t.562-.263L17 13h2l.3 1.5q.3.125.563.275t.537.375l1.45-.5l1 1.75l-1.15 1q.05.3.05.625t-.05.625l1.15 1l-1 1.7l-1.45-.45q-.275.2-.537.338t-.563.262L19 23zm1-3q.825 0 1.413-.587T20 18t-.587-1.412T18 16t-1.412.588T16 18t.588 1.413T18 20" />
+      </svg>
+    </button>
+  </div>
+</header>
+
+<div id="config-overlay" class="config-overlay hidden">
+  <div class="config-panel">
+    <div class="config-panel-header">
+      <span class="card-label">{{ t.config_title }}</span>
+      <button id="config-close" class="icon-btn" type="button" aria-label="{{ t.close }}">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M5 5l14 14M19 5L5 19"/>
+        </svg>
+      </button>
+    </div>
+    <div class="config-body">
+      <label class="config-field">
+        <span class="config-field-label">{{ t.field_lang }}</span>
+        <select id="cfg-lang">
+          <option value="en">English</option>
+          <option value="fr">Français</option>
+          <option value="it">Italiano</option>
+        </select>
+      </label>
+      <label class="config-field">
+        <span class="config-field-label">{{ t.field_station }}</span>
+        <input type="text" id="cfg-station" maxlength="4" pattern="[A-Za-z]{4}" placeholder="ZSNJ" autocapitalize="characters" autocomplete="off" spellcheck="false">
+        <span class="config-field-hint">{{ t.field_station_hint }}</span>
+      </label>
+      <label class="config-field">
+        <span class="config-field-label">{{ t.field_broker }}</span>
+        <input type="text" id="cfg-broker">
+      </label>
+      <label class="config-field">
+        <span class="config-field-label">{{ t.field_topic }}</span>
+        <input type="text" id="cfg-topic">
+      </label>
+    </div>
+    <div class="config-actions">
+      <button id="config-cancel" class="btn btn-outline" type="button">{{ t.btn_cancel }}</button>
+      <button id="config-save" class="btn btn-solid" type="button">{{ t.btn_save }}</button>
+    </div>
+  </div>
+</div>
+
+<main>
+
+  <div class="layout">
+
+    <!-- Left column: irrigation + weather -->
+    <div class="col-left">
+
+      <div class="card">
+        <div class="card-label">{{ t.card_next_irrigation }}</div>
+        <div class="countdown-row">
+          <div id="countdown">—</div>
+          <span class="countdown-sep">|</span>
+          <span id="ring-pct">—</span>
+        </div>
+        <div id="event-list" class="event-list"></div>
+        <div class="query-row">
+          <span class="query-label">{{ t.next_reading }}</span>
+          <span id="query-countdown">—</span>
+        </div>
+      </div>
+
+      <div class="grid g-5">
+        <div class="card metric-card">
+          <div class="metric-label">{{ t.metric_temp }}</div>
+          <div id="m-temp" class="metric-value">—</div>
+          <div id="m-temp-range" class="metric-sub">—</div>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-label">{{ t.metric_rh }}</div>
+          <div id="m-rh" class="metric-value">—</div>
+          <div id="m-rh-sub" class="metric-sub">{{ t.metric_rh_sub }}</div>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-label">{{ t.metric_wind }}</div>
+          <div id="m-wind" class="metric-value">—</div>
+          <div class="metric-sub">m/s</div>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-label">{{ t.metric_vpd }}</div>
+          <div id="m-vpd" class="metric-value">—</div>
+          <div class="metric-sub">kPa</div>
+        </div>
+        <div class="card metric-card">
+          <div class="metric-label">{{ t.metric_demand }}</div>
+          <div id="m-demand" class="metric-value">—</div>
+          <div class="metric-sub">mm/d</div>
+        </div>
+      </div>
+
+      <!-- History in the left column -->
+      <div class="card">
+        <div class="card-label">{{ t.card_history }}</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{{ t.th_date }}</th>
+                <th>{{ t.th_decision }}</th>
+                <th>{{ t.th_pct }}</th>
+                <th>{{ t.th_pump_s }}</th>
+                <th>{{ t.th_rain_mm }}</th>
+                <th>{{ t.th_tmin }}</th>
+                <th>{{ t.th_tmax }}</th>
+              </tr>
+            </thead>
+            <tbody id="history-body">
+              <tr><td colspan="7" class="tbl-empty">{{ t.loading }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Pump nodes: MQTT ACKs received from the ESP32s, by identifier/MAC -->
+      <div class="card">
+        <div class="card-label">{{ t.card_pump_nodes }}</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{{ t.th_node }}</th>
+                <th>{{ t.th_seen }}</th>
+                <th>{{ t.th_executed }}</th>
+                <th>{{ t.th_pump_s }}</th>
+                <th>{{ t.th_decision }}</th>
+                <th>{{ t.th_armed }}</th>
+              </tr>
+            </thead>
+            <tbody id="acks-body">
+              <tr><td colspan="6" class="tbl-empty">{{ t.loading }}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right column: three stacked charts, same time axis -->
+    <div class="card col-charts">
+      <div class="stk-header">
+        {{ t.chart_owm }}
+        <span class="chart-legend"><span class="leg-grid">{{ t.legend_precip }}</span><span class="leg-solid">{{ t.legend_temp }}</span><span class="leg-irrig">{{ t.legend_irrig }}</span></span>
+      </div>
+      <div class="chart-scroll"><canvas id="chart-rain-owm"></canvas></div>
+
+      <div class="stk-header">
+        {{ t.chart_yr }}
+        <span class="chart-legend"><span class="leg-grid">{{ t.legend_precip }}</span><span class="leg-solid">{{ t.legend_temp }}</span><span class="leg-irrig">{{ t.legend_irrig }}</span></span>
+      </div>
+      <div class="chart-scroll"><canvas id="chart-rain-yr"></canvas></div>
+
+      <div class="stk-header">
+        {{ t.chart_om }}
+        <span class="chart-legend"><span class="leg-grid">{{ t.legend_precip }}</span><span class="leg-solid">{{ t.legend_temp }}</span><span class="leg-irrig">{{ t.legend_irrig }}</span></span>
+      </div>
+      <div class="chart-scroll"><canvas id="chart-rain-om"></canvas></div>
+    </div>
+
+  </div>
+
+
+</main>
+
+<footer>
+  <img src="/static/logo.svg" alt="Notre-Dame de la Sainte-Croix de Saignes-en-Padaine" class="footer-logo">
+</footer>
+
+<script>window.I18N = {{ i18n_json|safe }};</script>
+<script src="/static/app.js"></script>
+</body>
+</html>

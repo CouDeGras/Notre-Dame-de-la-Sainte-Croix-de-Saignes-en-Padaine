@@ -1,0 +1,16 @@
+[Unit]
+Description=Saignes-en-Padaine irrigation dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=josue
+WorkingDirectory=/home/josue/saignes_en_padaine
+ExecStart=/usr/bin/python3 /home/josue/saignes_en_padaine/main.py --port 8080 --host 0.0.0.0
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.claude/settings.local.json
+
+# runtime-generated cache/data files
+data/*
+!data/.gitkeep
+!data/site_config.json

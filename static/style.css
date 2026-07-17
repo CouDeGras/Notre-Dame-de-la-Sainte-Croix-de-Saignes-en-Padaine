@@ -1,0 +1,289 @@
+/* ── Tokens: pure black / white only ── */
+:root { --b: #fff; --w: #000; --irrig: #b5caa0; }
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  /* Safety net: internal scroll areas (.table-wrap, .chart-scroll) declare
+     their own overflow-x so this never blocks the scrolling they need. */
+  overflow-x: hidden;
+  width: 100%;
+}
+
+body {
+  background: var(--w);
+  color: var(--b);
+  font-family: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+  font-size: 16.8px;
+  min-height: 100vh;
+}
+
+/* ── Header ── */
+header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 1.08rem 1.8rem;
+  border-bottom: 1px solid var(--b);
+}
+
+.hdr-left { display: flex; align-items: center; gap: 0.9rem; }
+.hdr-logo { height: 2.3rem; width: auto; display: block; }
+#subtitle    { font-size: 0.84rem; font-weight: 100; letter-spacing: normal; font-family: 'Space Grotesk', sans-serif; }
+
+.hdr-right { display: flex; align-items: center; flex-wrap: wrap; gap: 0.48rem; font-size: 0.84rem; }
+
+/* City name, centered on the bar independent of hdr-left/hdr-right's widths */
+.hdr-city {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  font-weight: 700; font-size: 0.96rem; letter-spacing: 0.02em;
+}
+
+/* ── Badges ── */
+.badge {
+  padding: 0.22rem 0.66rem;
+  border: 1px solid var(--b);
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  background: var(--w); color: var(--b);
+}
+.hidden { display: none !important; }
+
+/* ── Icon button (header config trigger, modal close) ── */
+.icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  background: transparent; color: var(--b);
+  padding: 0.1rem;
+  cursor: pointer;
+}
+.icon-btn:hover { opacity: 0.6; }
+.icon-btn:disabled { cursor: default; opacity: 0.6; }
+.icon-btn.spinning svg { animation: icon-spin 0.8s linear infinite; }
+@keyframes icon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* ── Config modal ── */
+.config-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.2rem;
+  z-index: 100;
+}
+.config-panel {
+  width: 100%; max-width: 26rem;
+  background: var(--w); border: 1px solid var(--b);
+  padding: 1.5rem;
+}
+.config-panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 1.2rem;
+}
+.config-panel-header .card-label { margin-bottom: 0; }
+
+.config-body { display: flex; flex-direction: column; gap: 0.9rem; }
+.config-field { display: flex; flex-direction: column; gap: 0.36rem; }
+.config-field-label {
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+}
+.config-field input, .config-field select {
+  font-family: inherit; font-size: 0.9rem;
+  background: var(--w); color: var(--b);
+  border: 1px solid var(--b);
+  padding: 0.5rem 0.6rem;
+}
+.config-field input::placeholder { color: var(--b); opacity: 0.4; }
+.config-field input:focus, .config-field select:focus { outline: 2px solid var(--b); outline-offset: -2px; }
+.config-field input#cfg-station { text-transform: uppercase; }
+.config-field-hint { font-size: 0.72rem; opacity: 0.55; }
+
+.config-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1.5rem; }
+.btn {
+  font-family: inherit; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--b);
+  cursor: pointer;
+}
+.btn-outline { background: var(--w); color: var(--b); }
+.btn-outline:hover { background: var(--b); color: var(--w); }
+.btn-solid { background: var(--b); color: var(--w); }
+.btn-solid:hover { opacity: 0.85; }
+
+/* ── Layout ── */
+main { padding: 1.2rem 1.8rem; display: flex; flex-direction: column; gap: 0.9rem; max-width: 1320px; margin: 0 auto; }
+
+.layout { display: grid; grid-template-columns: 1fr 2fr; gap: 0.9rem; align-items: start; }
+.col-left { display: flex; flex-direction: column; gap: 0.9rem; }
+
+.grid { display: grid; gap: 0.9rem; }
+.g-2-1 { grid-template-columns: 2fr 1fr; }
+.g-5   { grid-template-columns: repeat(5, 1fr); }
+
+/* ── Cards ── */
+.card { background: var(--w); border: 1px solid var(--b); padding: 1.2rem 1.5rem; }
+
+.card-inv  { background: var(--b); color: var(--w); border-color: var(--b); }
+
+.card-label {
+  font-size: 0.68rem; font-weight: 700; letter-spacing: 0.18em;
+  text-transform: uppercase; margin-bottom: 0.9rem;
+}
+.card-inv .card-label { color: var(--w); }
+
+/* ── Countdown ── */
+.countdown-row {
+  display: flex; align-items: baseline; gap: 0.72rem;
+  margin-bottom: 0.78rem;
+}
+.countdown-sep { font-size: 1.92rem; font-weight: 100; opacity: 0.35; }
+#countdown {
+  font-size: 1.92rem; font-weight: 700;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+  line-height: 1;
+}
+#ring-pct {
+  font-size: 1.92rem; font-weight: 700;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.event-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.query-row { display: flex; align-items: baseline; gap: 0.72rem; margin-top: 0.9rem; border-top: 1px solid var(--b); padding-top: 0.78rem; }
+.query-label { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; white-space: nowrap; }
+#query-countdown { font-size: 0.86rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+.event-row { display: flex; align-items: baseline; gap: 0.54rem; font-size: 0.86rem; flex-wrap: wrap; }
+
+.ev-seq {
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.05em;
+  border: 1px solid var(--b); padding: 0.06rem 0.36rem;
+}
+.ev-anchor {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 0.06rem 0.42rem; border: 1px solid var(--b);
+}
+.ev-time { font-weight: 300; }
+.ev-pct  { font-weight: 700; }
+.ev-dur  { font-weight: 300; font-size: 0.79rem; }
+
+
+
+/* ── Metric cards — minuscule ── */
+.metric-card  { text-align: center; padding: 0.48rem 0.36rem; }
+.metric-label { font-size: 0.58rem; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; margin-bottom: 0.18rem; }
+.metric-value { font-size: 1.06rem; font-weight: 700; letter-spacing: -0.01em; line-height: 1; margin-bottom: 0.12rem; }
+.metric-sub   { font-size: 0.53rem; font-weight: 300; }
+
+/* ── Stacked chart section headers ── */
+.stk-header {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase;
+  padding: 0.66rem 0 0.24rem; border-top: 1px solid var(--b); margin-top: 0.48rem;
+}
+.stk-header:first-child { padding-top: 0; border-top: none; margin-top: 0; }
+
+/* ── Chart legend (inline in stk-header) ── */
+.chart-legend { display: flex; gap: 1.08rem; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; }
+
+.leg-solid { display: flex; align-items: center; gap: 0.42rem; }
+
+.leg-solid::before { content: ''; display: inline-block; width: 19px; height: 0; border-top: 2px solid var(--b); }
+
+.leg-irrig { display: flex; align-items: center; gap: 0.42rem; color: var(--irrig); }
+
+.leg-irrig::before { content: ''; display: inline-block; width: 19px; height: 0; border-top: 2px dotted var(--irrig); }
+
+.leg-grid { display: flex; align-items: center; gap: 0.42rem; }
+
+.leg-grid::before { content: ''; display: inline-block; width: 7px; height: 7px; background: var(--b); }
+
+/* ── Chart scroll (precipitation canvases may be wider than card) ── */
+.chart-scroll { overflow-x: auto; scrollbar-width: none; }
+.chart-scroll::-webkit-scrollbar { display: none; }
+
+canvas { display: block; image-rendering: pixelated; }
+
+/* ── History table ── */
+/* Each table scrolls independently within a fixed-height widget instead of
+   growing the card (and the page) with the row count. */
+.table-wrap { overflow-x: auto; overflow-y: auto; max-height: 320px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+th {
+  text-align: left; padding: 0.42rem 0.78rem;
+  font-size: 0.62rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  border-bottom: 1px solid var(--b); white-space: nowrap;
+  position: sticky; top: 0; background: var(--w);
+}
+td { padding: 0.54rem 0.78rem; border-bottom: 1px solid var(--b); font-weight: 300; }
+td:first-child, td strong { font-weight: 700; }
+tr:last-child td { border-bottom: none; }
+
+.tbl-empty { text-align: center; padding: 1.5rem !important; font-weight: 300; }
+
+.dec-pill {
+  display: inline-block; font-size: 0.65rem; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 0.14rem 0.48rem; border: 1px solid var(--b);
+}
+.dec-pill-inv { background: var(--b); color: var(--w); }
+
+/* ── Footer ── */
+footer { padding: 1.2rem 1.8rem; max-width: 1320px; margin: 0 auto; }
+.footer-logo { display: block; width: 100%; max-width: 210px; height: auto; }
+
+/* ── Responsive ── */
+@media (max-width: 1032px) {
+  .layout { grid-template-columns: 1fr; }
+  .g-5 { grid-template-columns: repeat(3, 1fr); }
+  .card-top { flex-direction: column; align-items: flex-start; }
+  .top-aside { flex-direction: row; align-self: stretch; justify-content: space-between; }
+
+  /* Below this breakpoint .layout is already a single column, so there's no
+     wide desktop column to size to content anymore. Flex/grid items default
+     to a minimum width equal to their content's natural size, which is what
+     let a wide table force its column -- and the page -- past the viewport
+     edge here. min-width: 0 lets these shrink to their assigned width
+     instead, so a table that's still too wide falls back to its own
+     .table-wrap { overflow-x: auto } scrollbar rather than blowing out the
+     page. Deliberately NOT applied above 1032px: on desktop there's room for
+     the column to size to the table's content, which is the nicer look (no
+     scrollbar) and was the existing behavior there. */
+  .layout, .col-left, .grid, .card { min-width: 0; }
+}
+@media (max-width: 648px) {
+  .g-5   { grid-template-columns: repeat(2, 1fr); }
+  main   { padding: 0.9rem; }
+  header { padding: 0.9rem 1.2rem; }
+  .hdr-logo { height: 1.8rem; }
+}
+
+/* Phone-width (iPhone SE and similar, ~375-480 CSS px). Below 648px the
+   header no longer has room to hold hdr-left/hdr-city/hdr-right on one row
+   -- .hdr-city's absolute centering was overlapping the wrapped rows instead
+   of stacking under them, and the oversized countdown digits were wider than
+   the card, forcing the whole page wider than the viewport. Both are fixed
+   by dropping the header to a plain centered column (so hdr-city becomes a
+   normal stacked row instead of an absolutely-positioned overlay) and
+   shrinking the countdown/card sizing to fit. */
+@media (max-width: 480px) {
+  header {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.7rem 0.9rem;
+  }
+  .hdr-city {
+    position: static;
+    transform: none;
+  }
+  main { padding: 0.6rem; gap: 0.6rem; }
+  .card { padding: 0.9rem 1rem; }
+  .countdown-row { flex-wrap: wrap; gap: 0.4rem; }
+  #countdown, #ring-pct, .countdown-sep { font-size: 1.4rem; }
+  .g-5 { gap: 0.5rem; }
+}
