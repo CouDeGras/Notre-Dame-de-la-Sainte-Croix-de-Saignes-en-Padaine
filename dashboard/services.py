@@ -1,27 +1,26 @@
-#!/usr/bin/env python3
+"""Dashboard data access and API payload assembly.
+
+Ported as-is from the previous stdlib main.py: dashboard state (weather
+cache, irrigation history, pump acks, site config) lives in flat files under
+data/, written by weather_mqtt.py's scheduled/ack-listener processes and by
+api_config_save() below. This module owns reading/validating that state for
+dashboard/views.py; it deliberately doesn't touch the ORM/models, since the
+web layer is being made Django-shaped without changing what it does yet.
 """
-Fuenteazahar weather dashboard — stdlib-only HTTP server.
-Run: python3 main.py [--port 8080]
-"""
-import argparse
 import csv
 import json
 import math
-import mimetypes
 import re
 import subprocess
 import sys
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import urlparse, parse_qs
 
-import jinja2
+from django.conf import settings
 
-BASE_DIR = Path(__file__).parent
+from .i18n import DEFAULT_LANG, LANGS
+
+BASE_DIR = settings.BASE_DIR
 DATA_DIR = BASE_DIR / "data"
-STATIC_DIR = BASE_DIR / "static"
-TMPL_DIR = BASE_DIR / "templates"
 
 WEATHER_CACHE = DATA_DIR / "weather_cache.json"
 NEXT_WATERING = DATA_DIR / "next_watering.json"
@@ -32,9 +31,6 @@ SITE_CONFIG_FIELDS = ("station", "broker", "root_topic", "lang")
 WEATHER_MQTT_SCRIPT = BASE_DIR / "weather_mqtt.py"
 REFRESH_TIMEOUT_SECONDS = 90
 
-DEFAULT_LANG = "en"
-LANGS = ("en", "fr", "it")
-
 # Any 4-letter ICAO airport code is accepted -- weather_mqtt.py resolves its
 # lat/lon (from METAR) and tz (reverse-geocoded via Open-Meteo) dynamically
 # and caches the result, so this process only needs to validate the shape of
@@ -42,228 +38,22 @@ LANGS = ("en", "fr", "it")
 ICAO_RE = re.compile(r"^[A-Z]{4}$")
 DEFAULT_STATION = "ZSNJ"
 
-# All user-facing text, keyed by ISO language code. Consumed two ways: the
-# Jinja template reads `t.*` directly for text baked into the server-rendered
-# HTML, and the same dict is dumped as JSON into a `window.I18N` script tag
-# so app.js's dynamically-rendered content (table rows, countdown, config
-# modal feedback) can look up strings without a second source of truth.
-STRINGS = {
-    "en": {
-        "title_suffix": "Irrigation",
-        "subtitle": "Automatic irrigation",
-        "refresh_title": "Refresh",
-        "config_title": "Settings",
-        "close": "Close",
-        "field_station": "Airport code (ICAO)",
-        "field_station_hint": "4-letter ICAO code of your nearest airport, e.g. KJFK, EGLL, ZSNJ.",
-        "field_broker": "MQTT Broker",
-        "field_topic": "Root topic",
-        "field_lang": "Language",
-        "btn_cancel": "Cancel",
-        "btn_save": "Save",
-        "card_next_irrigation": "Next irrigation",
-        "next_reading": "Next reading",
-        "card_history": "Irrigation history",
-        "card_pump_nodes": "Pump nodes",
-        "metric_temp": "Temp.",
-        "metric_rh": "Humidity",
-        "metric_rh_sub": "airport obs.",
-        "metric_wind": "Wind",
-        "metric_vpd": "VPD",
-        "metric_demand": "Demand",
-        "th_date": "Date", "th_decision": "Decision", "th_pct": "%",
-        "th_pump_s": "Pump (s)", "th_rain_mm": "Rain (mm)", "th_tmin": "T min", "th_tmax": "T max",
-        "th_node": "Node", "th_seen": "Seen", "th_executed": "Executed", "th_armed": "Armed",
-        "chart_owm": "OWM precipitation and temperature",
-        "chart_yr": "Yr.no precipitation and temperature",
-        "chart_om": "Open-Meteo precipitation and temperature",
-        "legend_temp": "TEMP.", "legend_irrig": "IRRIG", "legend_precip": "3HPA",
-        "loading": "Loading…",
-        "decision_drench": "WATER", "decision_wait": "WAIT", "decision_freeze": "FROST",
-        "anchor_sunrise": "SUNRISE", "anchor_sunset": "SUNSET",
-        "now": "NOW", "yes": "YES", "no": "NO",
-        "no_acks": "No pump node has sent an ACK yet.",
-        "no_history": "No history yet — run weather_mqtt.py.",
-        "just_now": "just now",
-        "saving": "Saving…", "error": "Error",
-    },
-    "fr": {
-        "title_suffix": "Irrigation",
-        "subtitle": "Irrigation automatique",
-        "refresh_title": "Actualiser",
-        "config_title": "Configuration",
-        "close": "Fermer",
-        "field_station": "Code aéroport (OACI)",
-        "field_station_hint": "Code OACI à 4 lettres de l'aéroport le plus proche, ex. KJFK, EGLL, ZSNJ.",
-        "field_broker": "Broker MQTT",
-        "field_topic": "Sujet racine",
-        "field_lang": "Langue",
-        "btn_cancel": "Annuler",
-        "btn_save": "Enregistrer",
-        "card_next_irrigation": "Prochain arrosage",
-        "next_reading": "Prochaine lecture",
-        "card_history": "Historique d'arrosage",
-        "card_pump_nodes": "Nœuds de pompe",
-        "metric_temp": "Temp.",
-        "metric_rh": "Humidité",
-        "metric_rh_sub": "obs. aéroport",
-        "metric_wind": "Vent",
-        "metric_vpd": "VPD",
-        "metric_demand": "Besoin",
-        "th_date": "Date", "th_decision": "Décision", "th_pct": "%",
-        "th_pump_s": "Pompe (s)", "th_rain_mm": "Pluie (mm)", "th_tmin": "T min", "th_tmax": "T max",
-        "th_node": "Nœud", "th_seen": "Vu", "th_executed": "Exécuté", "th_armed": "Armé",
-        "chart_owm": "Précipitations et température OWM",
-        "chart_yr": "Précipitations et température Yr.no",
-        "chart_om": "Précipitations et température Open-Meteo",
-        "legend_temp": "TEMP.", "legend_irrig": "ARROS.", "legend_precip": "3HPA",
-        "loading": "Chargement…",
-        "decision_drench": "ARROSAGE", "decision_wait": "ATTENTE", "decision_freeze": "GEL",
-        "anchor_sunrise": "LEVER", "anchor_sunset": "COUCHER",
-        "now": "MAINTENANT", "yes": "OUI", "no": "NON",
-        "no_acks": "Aucun nœud de pompe n'a encore envoyé d'ACK.",
-        "no_history": "Aucun historique — exécutez weather_mqtt.py.",
-        "just_now": "à l'instant",
-        "saving": "Enregistrement…", "error": "Erreur",
-    },
-    "it": {
-        "title_suffix": "Irrigazione",
-        "subtitle": "Irrigazione automatica",
-        "refresh_title": "Aggiorna",
-        "config_title": "Configurazione",
-        "close": "Chiudi",
-        "field_station": "Codice aeroporto (ICAO)",
-        "field_station_hint": "Codice ICAO di 4 lettere dell'aeroporto più vicino, es. KJFK, EGLL, ZSNJ.",
-        "field_broker": "Broker MQTT",
-        "field_topic": "Argomento radice",
-        "field_lang": "Lingua",
-        "btn_cancel": "Annulla",
-        "btn_save": "Salva",
-        "card_next_irrigation": "Prossima irrigazione",
-        "next_reading": "Prossima lettura",
-        "card_history": "Storico irrigazione",
-        "card_pump_nodes": "Nodi pompa",
-        "metric_temp": "Temp.",
-        "metric_rh": "Umidità",
-        "metric_rh_sub": "oss. aeroporto",
-        "metric_wind": "Vento",
-        "metric_vpd": "VPD",
-        "metric_demand": "Fabbisogno",
-        "th_date": "Data", "th_decision": "Decisione", "th_pct": "%",
-        "th_pump_s": "Pompa (s)", "th_rain_mm": "Pioggia (mm)", "th_tmin": "T min", "th_tmax": "T max",
-        "th_node": "Nodo", "th_seen": "Visto", "th_executed": "Eseguito", "th_armed": "Armato",
-        "chart_owm": "Precipitazioni e temperatura OWM",
-        "chart_yr": "Precipitazioni e temperatura Yr.no",
-        "chart_om": "Precipitazioni e temperatura Open-Meteo",
-        "legend_temp": "TEMP.", "legend_irrig": "IRRIG.", "legend_precip": "3HPA",
-        "loading": "Caricamento…",
-        "decision_drench": "IRRIGA", "decision_wait": "ATTESA", "decision_freeze": "GELO",
-        "anchor_sunrise": "ALBA", "anchor_sunset": "TRAMONTO",
-        "now": "ORA", "yes": "SÌ", "no": "NO",
-        "no_acks": "Nessun nodo pompa ha ancora inviato un ACK.",
-        "no_history": "Nessuno storico — eseguire weather_mqtt.py.",
-        "just_now": "adesso",
-        "saving": "Salvataggio…", "error": "Errore",
-    },
-}
 
-_jinja_env = jinja2.Environment(
-    loader=jinja2.FileSystemLoader(str(TMPL_DIR)),
-    autoescape=True,
-)
-
-
-class Handler(BaseHTTPRequestHandler):
-
-    def log_message(self, fmt, *args):  # quieter logs
-        print(f"  {self.address_string()} {fmt % args}")
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
-
-        if path == "/":
-            self._serve_template("index.html")
-        elif path.startswith("/static/"):
-            self._serve_static(path[len("/static/"):])
-        elif path == "/api/status":
-            self._serve_json(_api_status())
-        elif path == "/api/history":
-            qs = parse_qs(parsed.query)
-            n = int(qs.get("n", ["14"])[0])
-            self._serve_json(_api_history(n))
-        elif path == "/api/acks":
-            self._serve_json(_api_acks())
-        elif path == "/api/config":
-            self._serve_json(_api_config_get())
-        else:
-            self._send(404, "text/plain", b"Not found")
-
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        path = parsed.path.rstrip("/") or "/"
-
-        if path == "/api/config":
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                payload = json.loads(raw.decode("utf-8"))
-            except Exception:
-                self._send(400, "text/plain", b"Invalid JSON")
-                return
-            try:
-                saved = _api_config_save(payload)
-            except ValueError as e:
-                self._send(400, "text/plain", str(e).encode())
-                return
-            self._serve_json(saved)
-        elif path == "/api/refresh":
-            try:
-                data = _api_refresh()
-            except RuntimeError as e:
-                self._send(502, "text/plain", str(e).encode())
-                return
-            self._serve_json(data)
-        else:
-            self._send(404, "text/plain", b"Not found")
-
-    # ── helpers ──────────────────────────────────────────────────────────────
-
-    def _serve_template(self, name: str):
+def current_lang() -> str:
+    """The site-wide UI language: whatever was last saved via the config
+    panel, else DEFAULT_LANG. Always one of LANGS -- an unset or corrupted
+    site_config.json falls back rather than crashing the page render."""
+    if SITE_CONFIG.exists():
         try:
-            tmpl = _jinja_env.get_template(name)
-            lang = _current_lang()
-            strings = STRINGS[lang]
-            i18n_json = json.dumps(strings, ensure_ascii=False).replace("</", "<\\/")
-            body = tmpl.render(lang=lang, t=strings, i18n_json=i18n_json).encode()
-            self._send(200, "text/html; charset=utf-8", body)
-        except Exception as e:
-            self._send(500, "text/plain", str(e).encode())
-
-    def _serve_static(self, rel: str):
-        p = STATIC_DIR / rel
-        if not p.exists() or not p.is_file():
-            self._send(404, "text/plain", b"Not found")
-            return
-        mime, _ = mimetypes.guess_type(str(p))
-        self._send(200, mime or "application/octet-stream", p.read_bytes())
-
-    def _serve_json(self, data):
-        body = json.dumps(data, ensure_ascii=False).encode()
-        self._send(200, "application/json; charset=utf-8", body)
-
-    def _send(self, code: int, content_type: str, body: bytes):
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+            lang = json.loads(SITE_CONFIG.read_text(encoding="utf-8")).get("lang")
+            if lang in LANGS:
+                return lang
+        except Exception:
+            pass
+    return DEFAULT_LANG
 
 
-# ── API handlers ─────────────────────────────────────────────────────────────
-
-def _api_status() -> dict:
+def api_status() -> dict:
     if not WEATHER_CACHE.exists():
         return _demo_status()
 
@@ -289,7 +79,7 @@ def _api_status() -> dict:
     return data
 
 
-def _api_history(n: int = 14) -> dict:
+def api_history(n: int = 14) -> dict:
     if not IRRIGATION_CSV.exists():
         return {"rows": _demo_history()}
     with IRRIGATION_CSV.open(encoding="utf-8", newline="") as f:
@@ -297,28 +87,14 @@ def _api_history(n: int = 14) -> dict:
     return {"rows": rows[-n:]}
 
 
-def _api_acks() -> dict:
+def api_acks() -> dict:
     if not PUMP_ACKS.exists():
         return {"devices": {}}
     data = json.loads(PUMP_ACKS.read_text(encoding="utf-8"))
     return {"devices": data.get("devices") or {}}
 
 
-def _current_lang() -> str:
-    """The site-wide UI language: whatever was last saved via the config
-    panel, else DEFAULT_LANG. Always one of LANGS -- an unset or corrupted
-    site_config.json falls back rather than crashing the page render."""
-    if SITE_CONFIG.exists():
-        try:
-            lang = json.loads(SITE_CONFIG.read_text(encoding="utf-8")).get("lang")
-            if lang in LANGS:
-                return lang
-        except Exception:
-            pass
-    return DEFAULT_LANG
-
-
-def _api_config_get() -> dict:
+def api_config_get() -> dict:
     if not SITE_CONFIG.exists():
         cfg = {k: "" for k in SITE_CONFIG_FIELDS}
         cfg["lang"] = DEFAULT_LANG
@@ -335,7 +111,7 @@ def _api_config_get() -> dict:
     return cfg
 
 
-def _api_config_save(payload: dict) -> dict:
+def api_config_save(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("Payload must be a JSON object.")
 
@@ -359,7 +135,7 @@ def _api_config_save(payload: dict) -> dict:
     return cfg
 
 
-def _api_refresh() -> dict:
+def api_refresh() -> dict:
     """Manual dashboard refresh button: re-fetch Yr.no/OWM/Open-Meteo/METAR
     right now via `weather_mqtt.py --fetch-only`, which refreshes the
     forecast/current/ensemble sections of weather_cache.json but -- unlike a
@@ -377,7 +153,7 @@ def _api_refresh() -> dict:
         raise RuntimeError(f"Refresh timed out after {REFRESH_TIMEOUT_SECONDS}s.")
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or "").strip()[-500:] or "weather_mqtt.py --fetch-only failed.")
-    return _api_status()
+    return api_status()
 
 
 def _effective_station() -> str:
@@ -547,21 +323,3 @@ def _demo_history() -> list:
         {"local_date": "2026-06-29", "decision_code": "DRENCH",     "decision_label": "LIGHT",   "commanded_percent": "40",  "commanded_pump_seconds": "48",  "forecast_precip_local_day_mm": "0.8",  "forecast_tmin24_c": "24.2", "forecast_tmax24_c": "32.8"},
         {"local_date": "2026-06-30", "decision_code": "WAIT",       "decision_label": "SKIP",    "commanded_percent": "0",   "commanded_pump_seconds": "0",   "forecast_precip_local_day_mm": "1.8",  "forecast_tmin24_c": "24.3", "forecast_tmax24_c": "33.1"},
     ]
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fuenteazahar dashboard server")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--host", default="0.0.0.0")
-    args = parser.parse_args()
-
-    addr = (args.host, args.port)
-    httpd = ThreadingHTTPServer(addr, Handler)
-    print(f"Dashboard running at http://localhost:{args.port}/")
-    print("Press Ctrl+C to stop.")
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopped.")

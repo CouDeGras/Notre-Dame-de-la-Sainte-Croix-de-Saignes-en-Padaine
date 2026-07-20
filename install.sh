@@ -3,8 +3,11 @@ set -euo pipefail
 
 PROJ="/home/josue/saignes_en_padaine"
 
-echo "==> Installing paho-mqtt system package"
-apt-get install -y python3-paho-mqtt
+echo "==> Installing Django and paho-mqtt system packages"
+apt-get install -y python3-django python3-paho-mqtt
+
+echo "==> Applying Django's own bookkeeping migrations (auth/sessions/admin -- dashboard data itself stays in data/*.json)"
+python3 "$PROJ/manage.py" migrate --noinput
 
 echo "==> Installing systemd units"
 cp "$PROJ/saignes-dashboard.service"        /etc/systemd/system/

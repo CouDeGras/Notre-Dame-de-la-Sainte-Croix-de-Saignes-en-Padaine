@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 .claude/settings.local.json
 
+# Django's own bookkeeping db (auth/sessions/admin) -- dashboard state stays
+# in data/*.json and data/irrigation_history.csv, tracked separately below.
+db.sqlite3
+
 # runtime-generated cache/data files
 data/*
 !data/.gitkeep

@@ -1,0 +1,77 @@
+import json
+
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_http_methods
+
+from . import services
+from .i18n import STRINGS
+
+# JSON payloads carry accented text (French/Italian strings, station names)
+# straight through rather than \uXXXX-escaping it, matching the previous
+# json.dumps(..., ensure_ascii=False) behavior.
+_JSON_PARAMS = {"json_dumps_params": {"ensure_ascii": False}}
+
+
+def _no_store(response):
+    # The previous stdlib server set this on every response it sent (HTML
+    # and JSON alike) -- this is a single-garden dashboard where every
+    # reader wants the current state, never a cached one.
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@require_GET
+def index(request):
+    lang = services.current_lang()
+    strings = STRINGS[lang]
+    i18n_json = json.dumps(strings, ensure_ascii=False).replace("</", "<\\/")
+    response = render(request, "index.html", {"lang": lang, "t": strings, "i18n_json": i18n_json})
+    return _no_store(response)
+
+
+@require_GET
+def api_status(request):
+    return _no_store(JsonResponse(services.api_status(), safe=False, **_JSON_PARAMS))
+
+
+@require_GET
+def api_history(request):
+    try:
+        n = int(request.GET.get("n", "14"))
+    except ValueError:
+        n = 14
+    return _no_store(JsonResponse(services.api_history(n), safe=False, **_JSON_PARAMS))
+
+
+@require_GET
+def api_acks(request):
+    return _no_store(JsonResponse(services.api_acks(), safe=False, **_JSON_PARAMS))
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def api_config(request):
+    if request.method == "GET":
+        return _no_store(JsonResponse(services.api_config_get(), safe=False, **_JSON_PARAMS))
+
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        return HttpResponse("Invalid JSON", status=400, content_type="text/plain")
+    try:
+        saved = services.api_config_save(payload)
+    except ValueError as e:
+        return HttpResponse(str(e), status=400, content_type="text/plain")
+    return _no_store(JsonResponse(saved, safe=False, **_JSON_PARAMS))
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_refresh(request):
+    try:
+        data = services.api_refresh()
+    except RuntimeError as e:
+        return HttpResponse(str(e), status=502, content_type="text/plain")
+    return _no_store(JsonResponse(data, safe=False, **_JSON_PARAMS))
