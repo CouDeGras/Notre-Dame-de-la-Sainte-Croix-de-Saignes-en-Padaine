@@ -38,12 +38,18 @@ chmod +x Saignes-en-Padaine-*.AppImage
 ```
 
 First launch: runs `manage.py migrate`, starts the dashboard on
-`127.0.0.1:8080` (loopback only — this is a single-machine desktop app, and
-every `/api/*` endpoint including config writes is unauthenticated) and
-`weather_mqtt.py --service`, then opens a window once the dashboard
-responds. All runtime data (the SQLite DB, weather cache, site config, etc.)
-lives under `~/.config/Saignes-en-Padaine/` (`app.getPath('userData')`), not
-inside the AppImage itself.
+`127.0.0.1:8090` (loopback only, and deliberately not 8080 — the existing
+systemd deployment's `saignes-dashboard.service` already binds `0.0.0.0:8080`
+there, so this needs its own port to run alongside it; also loopback-only
+since every `/api/*` endpoint including config writes is unauthenticated)
+and `weather_mqtt.py --service`, then opens a window once the dashboard
+responds. On a completely fresh data directory, `--service` runs its first
+full fetch immediately rather than waiting for the next scheduled boundary
+(see `run_service()`'s bootstrap check), so a new install shows real data
+within moments instead of sitting in demo mode for up to 3 hours. All
+runtime data (the SQLite DB, weather cache, site config, etc.) lives under
+`~/.config/Saignes-en-Padaine/` (`app.getPath('userData')`), not inside the
+AppImage itself.
 
 **Closing the window does not stop the app** — it hides to the tray icon,
 because `weather_mqtt.py --service` is what actually publishes irrigation

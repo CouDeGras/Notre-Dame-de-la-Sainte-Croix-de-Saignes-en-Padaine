@@ -104,10 +104,18 @@ async function startBackend() {
 }
 
 function createWindow(startupError) {
+  // Opt-in via SAIGNES_KIOSK so normal windowed dev/testing (e.g. on this
+  // machine) is unaffected -- a dedicated-hardware deployment (a Pi next to
+  // the garden, say) would set this in whatever launches the AppImage on
+  // boot. kiosk:true only removes window chrome/forces fullscreen; it does
+  // NOT disable the tray "Quit", default Electron accelerators (Ctrl+Q,
+  // etc.), or OS/WM-level shortcuts -- none of those are touched here.
+  const kiosk = process.env.SAIGNES_KIOSK === '1';
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     icon: path.join(__dirname, 'build', 'icon.png'),
+    kiosk,
     webPreferences: { contextIsolation: true },
   });
   if (startupError) {
