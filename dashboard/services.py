@@ -1,35 +1,44 @@
 """Dashboard data access and API payload assembly.
 
-Ported as-is from the previous stdlib main.py: dashboard state (weather
-cache, irrigation history, pump acks, site config) lives in flat files under
-data/, written by weather_mqtt.py's scheduled/ack-listener processes and by
-api_config_save() below. This module owns reading/validating that state for
-dashboard/views.py; it deliberately doesn't touch the ORM/models, since the
-web layer is being made Django-shaped without changing what it does yet.
+Ported as-is from the previous stdlib main.py: most dashboard state (weather
+cache, pump acks, site config) lives in flat files under data/, written by
+weather_mqtt.py's scheduled/ack-listener processes and by api_config_save()
+below. Irrigation decisions and METAR history live in the ORM instead
+(dashboard/models.py's IrrigationDecision/MetarReading) -- weather_mqtt.py
+writes them directly via the same models, sharing one schema definition
+instead of this module hand-parsing CSV rows weather_mqtt.py hand-wrote.
 """
-import csv
 import json
 import math
 import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 
 from django.conf import settings
 
 from .i18n import DEFAULT_LANG, LANGS
+from .models import IrrigationDecision, MetarReading
 
 BASE_DIR = settings.BASE_DIR
 DATA_DIR = BASE_DIR / "data"
 
 WEATHER_CACHE = DATA_DIR / "weather_cache.json"
 NEXT_WATERING = DATA_DIR / "next_watering.json"
-IRRIGATION_CSV = DATA_DIR / "irrigation_history.csv"
 PUMP_ACKS = DATA_DIR / "pump_acks.json"
 SITE_CONFIG = DATA_DIR / "site_config.json"
 SITE_CONFIG_FIELDS = ("station", "broker", "root_topic", "lang")
 WEATHER_MQTT_SCRIPT = BASE_DIR / "weather_mqtt.py"
 REFRESH_TIMEOUT_SECONDS = 90
+
+HISTORIC_DAYS = 3
+HISTORIC_BUCKET_HOURS = 3
 
 # Any 4-letter ICAO airport code is accepted -- weather_mqtt.py resolves its
 # lat/lon (from METAR) and tz (reverse-geocoded via Open-Meteo) dynamically
@@ -37,6 +46,14 @@ REFRESH_TIMEOUT_SECONDS = 90
 # the code, not maintain a registry of known stations.
 ICAO_RE = re.compile(r"^[A-Z]{4}$")
 DEFAULT_STATION = "ZSNJ"
+
+# Mirrors weather_mqtt.py's own hardcoded MQTT_BROKER_HOST/PORT and topic
+# namespace (same duplication pattern as DEFAULT_STATION above -- this
+# process and weather_mqtt.py are separate scripts and don't import each
+# other). Used so the config popup shows what broker/topic is actually in
+# effect instead of a blank field when site_config.json doesn't set one.
+DEFAULT_BROKER = "broker.emqx.io:1883"
+DEFAULT_ROOT_TOPIC = "notre_dame/sainte_croix/saignes_en_padaine"
 
 
 def current_lang() -> str:
@@ -51,6 +68,57 @@ def current_lang() -> str:
         except Exception:
             pass
     return DEFAULT_LANG
+
+
+def _historic_rows(tz_name: str, station: str) -> list:
+    """Last HISTORIC_DAYS of real METAR readings from MetarReading,
+    bucketed into the same shape/cadence as the forecast comparison rows
+    (see weather_mqtt.py's build_comparison_rows) so the frontend can just
+    prepend them to comparison.rows and chart the two back to back -- the
+    dashboard's column layout is index-based, not proportional to elapsed
+    time, so exact alignment with the forecast's own first timestamp isn't
+    needed (see colLayout's docstring in weather.js).
+
+    METAR is one ground-truth source, not per-provider, so the same
+    temperature fills owm/yr/om_temp_c alike (all three charts show the same
+    grayed-out historic line). There's no cached historic precipitation
+    total (only present-weather codes get logged, not an mm amount) -- rain
+    fields are always None here, which the chart renderer already treats as
+    "nothing to draw" for that column, i.e. padded blank rather than guessed.
+    A bucket with no logged reading (a gap in the hourly log, or before this
+    logging existed) is likewise left at None instead of interpolated.
+
+    Scoped to `station` -- otherwise switching the configured station would
+    mix another location's temperature readings into this location's chart.
+    """
+    tz = ZoneInfo(tz_name) if ZoneInfo else timezone.utc
+    try:
+        now = datetime.now(tz)
+    except Exception:
+        now = datetime.now(timezone.utc)
+
+    cutoff = now - timedelta(days=HISTORIC_DAYS)
+    readings = list(
+        MetarReading.objects
+        .filter(obs_time_epoch__gte=cutoff.timestamp(), temp_c__isnull=False, station=station)
+        .values_list("obs_time_epoch", "temp_c")
+    )
+
+    n_buckets = (HISTORIC_DAYS * 24) // HISTORIC_BUCKET_HOURS
+    rows = []
+    for i in range(n_buckets):
+        start = now - timedelta(hours=HISTORIC_BUCKET_HOURS * (n_buckets - i))
+        end = start + timedelta(hours=HISTORIC_BUCKET_HOURS)
+        bucket_temps = [t for (epoch, t) in readings if start.timestamp() <= epoch < end.timestamp()]
+        temp = round(sum(bucket_temps) / len(bucket_temps), 1) if bucket_temps else None
+        rows.append({
+            "local_time": start.strftime("%m-%d %H:%M"),
+            "epoch": int(start.timestamp()),
+            "owm_temp_c": temp, "yr_temp_c": temp, "om_temp_c": temp,
+            "owm_rain_3h_mm": None, "yr_rain_3h_mm": None, "om_rain_3h_mm": None,
+            "historic": True,
+        })
+    return rows
 
 
 def api_status() -> dict:
@@ -76,14 +144,21 @@ def api_status() -> dict:
         if isinstance(sched, dict):
             sched.setdefault("json_payload", nw)
 
+    comparison = data.setdefault("comparison", {})
+    comparison["rows"] = _historic_rows(loc.get("tz") or "UTC", station) + list(comparison.get("rows") or [])
+
     return data
 
 
 def api_history(n: int = 14) -> dict:
-    if not IRRIGATION_CSV.exists():
+    # Scoped to the currently-configured station -- otherwise switching
+    # station would show another location's irrigation decisions as if they
+    # were continuous history for this one. Rows written before per-station
+    # tracking existed (station="") are excluded here too, not guessed at.
+    qs = IrrigationDecision.objects.filter(station=_effective_station())
+    if not qs.exists():
         return {"rows": _demo_history()}
-    with IRRIGATION_CSV.open(encoding="utf-8", newline="") as f:
-        rows = list(csv.DictReader(f))
+    rows = list(qs.order_by("local_date").values())
     return {"rows": rows[-n:]}
 
 
@@ -99,6 +174,8 @@ def api_config_get() -> dict:
         cfg = {k: "" for k in SITE_CONFIG_FIELDS}
         cfg["lang"] = DEFAULT_LANG
         cfg["station"] = DEFAULT_STATION
+        cfg["broker"] = DEFAULT_BROKER
+        cfg["root_topic"] = DEFAULT_ROOT_TOPIC
         return cfg
     try:
         data = json.loads(SITE_CONFIG.read_text(encoding="utf-8"))
@@ -108,6 +185,8 @@ def api_config_get() -> dict:
     cfg["lang"] = cfg["lang"] if cfg["lang"] in LANGS else DEFAULT_LANG
     station = str(cfg["station"] or "").strip().upper()
     cfg["station"] = station if ICAO_RE.match(station) else DEFAULT_STATION
+    cfg["broker"] = str(cfg["broker"] or "").strip() or DEFAULT_BROKER
+    cfg["root_topic"] = str(cfg["root_topic"] or "").strip() or DEFAULT_ROOT_TOPIC
     return cfg
 
 
@@ -140,7 +219,7 @@ def api_refresh() -> dict:
     right now via `weather_mqtt.py --fetch-only`, which refreshes the
     forecast/current/ensemble sections of weather_cache.json but -- unlike a
     normal scheduled run -- never recomputes the irrigation decision, never
-    touches irrigation_history.csv/next_watering.json, and never publishes to
+    touches the IrrigationDecision table/next_watering.json, and never publishes to
     the MQTT broker (so it can't accidentally command a pump or consume a due
     watering event outside the normal 3-hourly cadence). See that flag's
     --help and run_fetch_only()'s docstring for the full reasoning."""

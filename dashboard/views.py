@@ -22,13 +22,24 @@ def _no_store(response):
     return response
 
 
-@require_GET
-def index(request):
+def _render_page(request, template_name, active_page):
     lang = services.current_lang()
     strings = STRINGS[lang]
     i18n_json = json.dumps(strings, ensure_ascii=False).replace("</", "<\\/")
-    response = render(request, "index.html", {"lang": lang, "t": strings, "i18n_json": i18n_json})
+    response = render(request, template_name, {
+        "lang": lang, "t": strings, "i18n_json": i18n_json, "active_page": active_page,
+    })
     return _no_store(response)
+
+
+@require_GET
+def weather_page(request):
+    return _render_page(request, "weather.html", "weather")
+
+
+@require_GET
+def irrigation_page(request):
+    return _render_page(request, "irrigation.html", "irrigation")
 
 
 @require_GET

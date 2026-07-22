@@ -3,11 +3,11 @@
 This project intentionally keeps the same runtime shape as the stdlib
 version it replaces: a single process, no reverse proxy, bound to 0.0.0.0
 and reached over plain HTTP on the LAN (see saignes-dashboard.service).
-Dashboard data (weather cache, irrigation history, pump acks, site config)
-still lives in flat files under data/, read/written by dashboard/services.py
--- this refactor does not move that state into the ORM. db.sqlite3 is only
-used for Django's own bookkeeping (auth/sessions/admin) so future control
-features have somewhere to put real models, users and permissions.
+Most dashboard state (weather cache, pump acks, site config) still lives in
+flat files under data/, read/written by dashboard/services.py. Irrigation
+decisions and METAR history live in the ORM instead (dashboard/models.py),
+written by weather_mqtt.py -- a separate, non-web process that bootstraps
+Django itself (django.setup()) purely to share this one schema definition.
 """
 import os
 from pathlib import Path
@@ -74,13 +74,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "core.wsgi.application"
 
-# Only backs Django's own auth/sessions/admin -- dashboard state stays in
-# data/*.json and data/irrigation_history.csv, read directly by
-# dashboard/services.py.
+# Backs Django's own auth/sessions/admin, plus dashboard.models'
+# IrrigationDecision/MetarReading (irrigation + METAR history, written by
+# weather_mqtt.py -- a separate OS process -- and read here). WAL mode
+# because that makes this a genuine multi-process concurrent-access
+# database (one writer process, one reader process) rather than SQLite's
+# usual single-process case; WAL substantially cuts "database is locked"
+# errors between the two.
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
+        "OPTIONS": {
+            "init_command": "PRAGMA journal_mode=WAL;",
+        },
     }
 }
 

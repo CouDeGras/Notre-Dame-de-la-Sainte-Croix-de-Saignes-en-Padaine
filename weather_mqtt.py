@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import os
@@ -38,9 +37,22 @@ try:
 except Exception:
     _mqtt_client = None
 
+# This script runs as its own OS process -- historically timer-triggered,
+# now a persistent service (see run_service()/--service) -- separate from
+# the Django dashboard's WSGI process. It bootstraps Django purely to share
+# one schema definition (dashboard/models.py) for irrigation-decision/METAR
+# history, instead of hand-writing CSV rows the dashboard then hand-parses
+# back (the old data/irrigation_history.csv, data/metar_history.csv).
+import django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
+django.setup()
+from django.db.models import Max
+
+from dashboard.models import IrrigationDecision, MetarReading
+
 # ====== MQTT SEND CONFIG ======
-# Published after every forecast run (triggered by saignes-weather.timer
-# every RUN_INTERVAL_HOURS). The payload always carries the NEXT TWO
+# Published after every forecast run (every RUN_INTERVAL_HOURS, driven by
+# run_service()'s loop). The payload always carries the NEXT TWO
 # irrigation events (epoch + percent + pump seconds), so the pumps can be
 # stateless between runs.
 #
@@ -108,27 +120,45 @@ def load_site_config(path: str) -> Dict[str, Any]:
         return {}
 
 
-_site_cfg = load_site_config(SITE_CONFIG_JSON)
+def refresh_site_config_overrides() -> None:
+    """Re-read data/site_config.json and refresh the module-level
+    station/broker/topic overrides it can set (DEFAULT_STATION,
+    MQTT_BROKER_HOST/PORT, MQTT_TOPIC_PUB/ACK).
 
-_station_raw = str(_site_cfg.get("station") or "").strip().upper()
-if ICAO_RE.match(_station_raw):
-    DEFAULT_STATION = _station_raw
+    Historically this only needed to run once at import time, because every
+    cycle was a fresh `python3 weather_mqtt.py` process (timer-triggered) --
+    re-importing the module naturally picked up config changes every 3
+    hours. Now that --service is one persistent process (loaded once,
+    looping internally -- see run_service()), nothing re-imports this
+    module anymore, so run_service() calls this explicitly before every
+    cycle instead. Still called once at module load too, for the
+    --current-only/--fetch-only/no-flag single-shot invocations, matching
+    the original one-read-per-process behavior exactly."""
+    global DEFAULT_STATION, MQTT_BROKER_HOST, MQTT_BROKER_PORT, MQTT_TOPIC_PUB, MQTT_TOPIC_ACK
+    site_cfg = load_site_config(SITE_CONFIG_JSON)
 
-_broker_raw = str(_site_cfg.get("broker") or "").strip()
-if _broker_raw:
-    if ":" in _broker_raw:
-        _broker_host, _broker_port_s = _broker_raw.rsplit(":", 1)
-        try:
-            MQTT_BROKER_HOST, MQTT_BROKER_PORT = _broker_host, int(_broker_port_s)
-        except ValueError:
-            MQTT_BROKER_HOST = _broker_raw
-    else:
-        MQTT_BROKER_HOST = _broker_raw
+    station_raw = str(site_cfg.get("station") or "").strip().upper()
+    if ICAO_RE.match(station_raw):
+        DEFAULT_STATION = station_raw
 
-_root_topic_raw = str(_site_cfg.get("root_topic") or "").strip().strip("/")
-if _root_topic_raw:
-    MQTT_TOPIC_PUB = f"{_root_topic_raw}/pub"
-    MQTT_TOPIC_ACK = f"{_root_topic_raw}/ack"
+    broker_raw = str(site_cfg.get("broker") or "").strip()
+    if broker_raw:
+        if ":" in broker_raw:
+            broker_host, broker_port_s = broker_raw.rsplit(":", 1)
+            try:
+                MQTT_BROKER_HOST, MQTT_BROKER_PORT = broker_host, int(broker_port_s)
+            except ValueError:
+                MQTT_BROKER_HOST = broker_raw
+        else:
+            MQTT_BROKER_HOST = broker_raw
+
+    root_topic_raw = str(site_cfg.get("root_topic") or "").strip().strip("/")
+    if root_topic_raw:
+        MQTT_TOPIC_PUB = f"{root_topic_raw}/pub"
+        MQTT_TOPIC_ACK = f"{root_topic_raw}/ack"
+
+
+refresh_site_config_overrides()
 
 # ====== WEATHER CONFIG ======
 YR_API_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
@@ -162,14 +192,18 @@ EXTREME_HEAT_MAX_C = 40.0
 RAIN_POSTPONE_FRACTION = 0.20
 RAIN_RESET_FRACTION = 0.80
 MAX_INTERVAL_DAYS = 14.0
-IRRIGATION_DB_CSV = "/home/josue/saignes_en_padaine/data/irrigation_history.csv"
 NEXT_WATERING_JSON = "/home/josue/saignes_en_padaine/data/next_watering.json"
 WEATHER_CACHE_JSON = "/home/josue/saignes_en_padaine/data/weather_cache.json"
-# The script itself no longer loops -- saignes-weather.timer fires it at
-# quantized wall-clock boundaries (00:00, 03:00, ... every RUN_INTERVAL_HOURS,
-# 8x/day) so a suspended/sleeping machine can't desync an internal sleep()
-# from the schedule the way it could before. This constant is only used to
-# compute the *next* boundary for the dashboard's countdown display.
+# Irrigation decisions and METAR readings live in the ORM instead (see the
+# django.setup() bootstrap above and dashboard/models.py's
+# IrrigationDecision/MetarReading) -- both the hourly current-only refresh
+# and the tri-hourly full run write MetarReading rows (see
+# append_metar_log_row).
+#
+# Quantized wall-clock boundaries (00:00, 03:00, ... every
+# RUN_INTERVAL_HOURS, 8x/day) so a suspended/sleeping machine can't desync an
+# internal sleep() from the schedule. Used both by run_service()'s loop and
+# to compute the *next* boundary for the dashboard's countdown display.
 RUN_INTERVAL_HOURS = 3
 
 # Per-source fetch retry + stale-fallback cache. A source's raw payload is
@@ -186,38 +220,6 @@ SOURCE_PAYLOAD_CACHE = {
     "Open-Meteo": "/home/josue/saignes_en_padaine/data/last_ok_om.json",
     "METAR": "/home/josue/saignes_en_padaine/data/last_ok_metar.json",
 }
-
-IRRIGATION_DB_FIELDS = [
-    "local_date",
-    "generated_at_local",
-    "source_mode",
-    "forecast_tmin24_c",
-    "forecast_tmean72_c",
-    "forecast_tmax24_c",
-    "target_interval_days",
-    "interval_demand_mm",
-    "forecast_precip_local_day_mm",
-    "forecast_precip_next24_mm",
-    "effective_rain_today_mm",
-    "recent_rain_mm",
-    "rain_postpone_threshold_mm",
-    "rain_reset_threshold_mm",
-    "decision_code",
-    "decision_label",
-    "should_irrigate_now",
-    "commanded_percent",
-    "commanded_pump_seconds",
-    "event_completed",
-    "event_epoch",
-    "event_solar_anchor",
-    "last_event_epoch",
-    "next_watering_epoch",
-    "next_watering_iso_local",
-    "projected_following_epoch",
-    "projected_following_iso_local",
-    "schedule_armed",
-    "note",
-]
 
 #DEFAULT_OUTPUT = os.getenv("WEATHER_TEXT_OUTPUT", "./garden_weather_cache.txt")
 DEFAULT_OUTPUT = "/home/josue/saignes_en_padaine/data/weather.txt"
@@ -274,9 +276,10 @@ def get_tz(tz_name: str):
 
 def next_quantized_run_epoch(now_local: datetime, interval_hours: int = RUN_INTERVAL_HOURS) -> int:
     """Next wall-clock boundary that's a multiple of interval_hours past local
-    midnight (e.g. 00:00/03:00/06:00/.../21:00 for interval_hours=3) -- purely
-    for the dashboard's "next reading" display, matching what
-    saignes-weather.timer will actually fire next."""
+    midnight (e.g. 00:00/03:00/06:00/.../21:00 for interval_hours=3). Used
+    both for the dashboard's "next reading" countdown display and, since
+    run_service() replaced saignes-weather.timer, to actually schedule the
+    next full cycle."""
     slot = (now_local.hour // interval_hours + 1) * interval_hours
     midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     return int((midnight + timedelta(hours=slot)).timestamp())
@@ -573,39 +576,6 @@ def target_interval_days_from_temperature(
     return 7.0, "TEMPERATURE_CADENCE"
 
 
-def read_irrigation_db(path: str) -> List[Dict[str, str]]:
-    p = Path(path).expanduser().resolve()
-    if not p.exists():
-        return []
-    with p.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        return [dict(row) for row in reader]
-
-
-def atomic_write_csv(path: str, fieldnames: List[str], rows: List[Dict[str, Any]]) -> None:
-    out_path = Path(path).expanduser().resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        newline="",
-        dir=str(out_path.parent),
-        prefix=out_path.name + ".",
-        suffix=".tmp",
-        delete=False,
-    ) as tmp:
-        writer = csv.DictWriter(tmp, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp_name = tmp.name
-
-    os.replace(tmp_name, out_path)
-
-
 def atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
     out_path = Path(path).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -717,11 +687,12 @@ def start_ack_subscriber() -> Optional["_mqtt_client.Client"]:
     Unlike publish_mqtt_schedule() (a one-shot connect/publish/disconnect run
     once per forecast cycle), pump acks can arrive at any time -- each node
     wakes on its own schedule and reports in. So this client is created once
-    for the lifetime of the process -- run via `weather_mqtt.py --ack-listener`
-    as the long-lived saignes-ack-listener.service, separate from the
-    timer-triggered, one-shot forecast/publish cycle in main() -- and kept
-    connected via paho's own network thread (loop_start) with auto-reconnect,
-    rather than being re-opened per cycle.
+    for the lifetime of the process -- called from run_service() (the normal
+    persistent saignes-weather.service) or standalone via `weather_mqtt.py
+    --ack-listener` for debugging -- and kept connected via paho's own
+    network thread (loop_start) with auto-reconnect, rather than being
+    re-opened per cycle. Runs independently of whatever the calling
+    process's main thread is doing (e.g. run_service()'s sleep loop).
     Returns the client (so callers could stop it) or None if unavailable.
     """
     if _mqtt_client is None:
@@ -764,51 +735,20 @@ def start_ack_subscriber() -> Optional["_mqtt_client.Client"]:
     return client
 
 
-def upsert_irrigation_db_row(path: str, row: Dict[str, Any]) -> None:
-    existing = read_irrigation_db(path)
-    keyed: Dict[str, Dict[str, Any]] = {}
-    for r in existing:
-        key = str(r.get("local_date") or "")
-        if key:
-            keyed[key] = r
-    keyed[str(row["local_date"])] = row
-    rows = [keyed[k] for k in sorted(keyed.keys())]
-    atomic_write_csv(path, IRRIGATION_DB_FIELDS, rows)
+def upsert_irrigation_decision(row: Dict[str, Any]) -> None:
+    """Upsert one IrrigationDecision row keyed by local_date -- same
+    upsert-by-date behavior the CSV era's upsert_irrigation_db_row had."""
+    local_date = row["local_date"]
+    defaults = {k: v for k, v in row.items() if k != "local_date"}
+    IrrigationDecision.objects.update_or_create(local_date=local_date, defaults=defaults)
 
 
-def latest_db_row(db_rows: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
-    if not db_rows:
-        return None
-    return sorted(
-        db_rows,
-        key=lambda r: (str(r.get("local_date") or ""), str(r.get("generated_at_local") or "")),
-    )[-1]
+def latest_db_row(qs) -> Optional["IrrigationDecision"]:
+    return qs.order_by("local_date", "generated_at_local").last()
 
 
-def float_from_row(row: Optional[Dict[str, str]], key: str) -> Optional[float]:
-    if not row:
-        return None
-    try:
-        v = row.get(key)
-        if v in (None, "", "None", "null"):
-            return None
-        return float(v)
-    except Exception:
-        return None
-
-
-def last_completed_event_epoch(db_rows: List[Dict[str, str]]) -> Optional[float]:
-    best: Optional[float] = None
-    for row in db_rows:
-        flag = str(row.get("event_completed") or "").strip().lower()
-        if flag not in ("1", "true", "yes"):
-            continue
-        ev = float_from_row(row, "event_epoch")
-        if ev is None:
-            continue
-        if best is None or ev > best:
-            best = ev
-    return best
+def last_completed_event_epoch(qs) -> Optional[int]:
+    return qs.filter(event_completed=True).aggregate(Max("event_epoch"))["event_epoch__max"]
 
 
 # ---------- Solar anchors (sunrise / sunset quantization) ----------
@@ -959,7 +899,7 @@ def apply_irrigation_schedule(
     owm_rows: Optional[List["Row"]],
     om_rows: Optional[List["Row"]],
     ensemble: Dict[str, Any],
-    db_rows: List[Dict[str, str]],
+    db_rows,  # IrrigationDecision queryset (dashboard.models)
     recent_rain_mm: float,
 ) -> Dict[str, Any]:
     tz = get_tz(location.tz_name)
@@ -978,7 +918,7 @@ def apply_irrigation_schedule(
     recent_rain_eff_mm = recent_rain_mm * EXPOSURE_FACTOR
 
     latest_row = latest_db_row(db_rows)
-    stored_next_due_epoch = float_from_row(latest_row, "next_watering_epoch")
+    stored_next_due_epoch = float(latest_row.next_watering_epoch) if latest_row else None
     previous_last_event_epoch = last_completed_event_epoch(db_rows)
 
     if stored_next_due_epoch is None:
@@ -1128,35 +1068,45 @@ def apply_irrigation_schedule(
             f"{e1_txt}; {e2_txt}."
         )
 
+    # Native Python types for IrrigationDecision.objects.update_or_create's
+    # defaults -- the CSV era formatted everything to strings here since a
+    # CSV row has no other option; the ORM's fields are already typed, so
+    # that formatting is gone.
     db_row = {
+        # ISO string, not a date object -- this dict also gets embedded into
+        # ensemble["schedule"]["db_row"] and written to weather_cache.json
+        # via plain json.dumps (atomic_write_json), which can't serialize a
+        # raw date. Django's DateField parses "YYYY-MM-DD" strings on write,
+        # so the ORM side doesn't need the object form either.
         "local_date": today.isoformat(),
+        "station": location.station,
         "generated_at_local": now_local.isoformat(timespec="seconds"),
         "source_mode": source_mode,
-        "forecast_tmin24_c": f"{float(tmin24_c or 0.0):.3f}",
-        "forecast_tmean72_c": f"{float(tmean72_c or 0.0):.3f}",
-        "forecast_tmax24_c": f"{float(tmax24_c or 0.0):.3f}",
-        "target_interval_days": "" if not math.isfinite(target_interval_days) else f"{target_interval_days:.3f}",
-        "interval_demand_mm": f"{interval_demand_mm:.3f}",
-        "forecast_precip_local_day_mm": f"{forecast_precip_local_day_mm:.3f}",
-        "forecast_precip_next24_mm": f"{forecast_precip_next24_mm:.3f}",
-        "effective_rain_today_mm": f"{effective_rain_today_mm:.3f}",
-        "recent_rain_mm": f"{recent_rain_mm:.3f}",
-        "rain_postpone_threshold_mm": f"{rain_postpone_threshold_mm:.3f}",
-        "rain_reset_threshold_mm": f"{rain_reset_threshold_mm:.3f}",
+        "forecast_tmin24_c": float(tmin24_c) if tmin24_c is not None else None,
+        "forecast_tmean72_c": float(tmean72_c) if tmean72_c is not None else None,
+        "forecast_tmax24_c": float(tmax24_c) if tmax24_c is not None else None,
+        "target_interval_days": target_interval_days if math.isfinite(target_interval_days) else None,
+        "interval_demand_mm": float(interval_demand_mm),
+        "forecast_precip_local_day_mm": float(forecast_precip_local_day_mm),
+        "forecast_precip_next24_mm": float(forecast_precip_next24_mm),
+        "effective_rain_today_mm": float(effective_rain_today_mm),
+        "recent_rain_mm": float(recent_rain_mm),
+        "rain_postpone_threshold_mm": float(rain_postpone_threshold_mm),
+        "rain_reset_threshold_mm": float(rain_reset_threshold_mm),
         "decision_code": decision_code,
         "decision_label": decision_label,
-        "should_irrigate_now": "1" if should_irrigate_now else "0",
-        "commanded_percent": str(int(command_percent)),
-        "commanded_pump_seconds": str(commanded_pump_seconds),
-        "event_completed": "1" if event_completed else "0",
-        "event_epoch": "" if event_epoch is None else str(event_epoch),
+        "should_irrigate_now": bool(should_irrigate_now),
+        "commanded_percent": int(command_percent),
+        "commanded_pump_seconds": int(commanded_pump_seconds),
+        "event_completed": bool(event_completed),
+        "event_epoch": None if event_epoch is None else int(event_epoch),
         "event_solar_anchor": event1_anchor if should_irrigate_now else "",
-        "last_event_epoch": "" if last_event_epoch is None else str(int(last_event_epoch)),
-        "next_watering_epoch": str(int(next_watering_epoch)),
+        "last_event_epoch": None if last_event_epoch is None else int(last_event_epoch),
+        "next_watering_epoch": int(next_watering_epoch),
         "next_watering_iso_local": next_watering_iso_local,
-        "projected_following_epoch": str(int(projected_following_epoch)),
+        "projected_following_epoch": int(projected_following_epoch),
         "projected_following_iso_local": projected_following_iso_local,
-        "schedule_armed": "1" if schedule_armed else "0",
+        "schedule_armed": bool(schedule_armed),
         "note": note,
     }
 
@@ -1202,7 +1152,7 @@ def apply_irrigation_schedule(
         "decision_label": decision_label,
         "summary_text": summary,
         "db_row": db_row,
-        "db_path": IRRIGATION_DB_CSV,
+        "db_path": "sqlite (dashboard.models.IrrigationDecision)",
         "next_watering_epoch": int(next_command_epoch),
         "next_watering_iso_local": datetime.fromtimestamp(next_command_epoch, tz=tz).isoformat(timespec="seconds"),
         "projected_following_epoch": int(projected_following_epoch),
@@ -2339,6 +2289,40 @@ def current_conditions_block(
     }
 
 
+def append_metar_log_row(current_block: Optional[Dict[str, Any]], tz_name: str) -> None:
+    """Create one MetarReading row for a successful current-conditions fetch
+    (current_block is current_conditions_block()'s output -- None means the
+    fetch had nothing to show, e.g. no prior cache to fall back to, so
+    there's nothing worth logging). Called once per hourly current-only
+    refresh and once per tri-hourly full run, so together they log every
+    METAR poll this script actually makes -- unlike weather_cache.json's
+    "current" key, which only ever holds the latest reading, this is a real
+    time series. Plain create (no upsert/dedup): a stale-fallback reading
+    logged twice in a row just honestly shows the poll happened but nothing
+    new arrived from the station."""
+    if current_block is None:
+        return
+    now_local = datetime.now(get_tz(tz_name))
+    wind_dir_deg = current_block.get("wind_dir_deg")
+    MetarReading.objects.create(
+        logged_at_epoch=int(now_local.timestamp()),
+        logged_at_local=now_local.isoformat(timespec="seconds"),
+        obs_time_epoch=current_block.get("obs_time_epoch"),
+        obs_time_local=current_block.get("obs_time_local") or "",
+        age_minutes=current_block.get("age_minutes"),
+        station=current_block.get("station") or "",
+        station_name=current_block.get("station_name") or "",
+        temp_c=current_block.get("temp_c"),
+        dewpoint_c=current_block.get("dewpoint_c"),
+        rh_pct=current_block.get("rh_pct"),
+        wind_mps=current_block.get("wind_mps"),
+        wind_dir_deg=None if wind_dir_deg is None else str(wind_dir_deg),
+        pressure_hpa=current_block.get("pressure_hpa"),
+        vpd_kpa=current_block.get("vpd_kpa"),
+        raw_ob=current_block.get("raw_ob") or "",
+    )
+
+
 def build_report_object(
     location: LocationInfo,
     now_local: datetime,
@@ -2495,7 +2479,7 @@ def build_report_object(
         },
         "artifacts": {
             "text_report_path": output_path,
-            "irrigation_db_csv_path": (ensemble.get("schedule") or {}).get("db_path"),
+            "irrigation_db": (ensemble.get("schedule") or {}).get("db_path"),
             "next_watering_json_path": (ensemble.get("schedule") or {}).get("json_path"),
         },
     }
@@ -2844,13 +2828,25 @@ def parse_args() -> argparse.Namespace:
         help="Also print the generated report to stdout.",
     )
     p.add_argument(
+        "--service",
+        action="store_true",
+        help=(
+            "Run persistently: start the MQTT ack subscriber, then loop "
+            "forever running the full tri-hourly cycle at each quantized "
+            "boundary and the hourly current-only refresh at each :30 mark. "
+            "This is the normal way to run the script (saignes-weather.service) "
+            "-- one persistent process instead of systemd timers re-invoking "
+            "it. --ack-listener/--current-only/--fetch-only below remain "
+            "for manual/debugging use."
+        ),
+    )
+    p.add_argument(
         "--ack-listener",
         action="store_true",
         help=(
             "Run only the persistent MQTT ack subscriber and block forever "
-            "(no forecast fetch). For the long-lived saignes-ack-listener.service; "
-            "the forecast/publish cycle itself runs once per invocation and exits, "
-            "triggered on a schedule by saignes-weather.timer."
+            "(no forecast fetch). Folded into --service for normal operation; "
+            "useful standalone for debugging pump ACKs in isolation."
         ),
     )
     p.add_argument(
@@ -2859,10 +2855,10 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Refresh only the METAR current-conditions block in weather_cache.json "
             "(station ground truth used by the dashboard's metric tiles) without "
-            "touching the forecast ensemble, irrigation decision, CSV history, or "
-            "MQTT publish. For the hourly saignes-weather-current.timer, which runs "
-            "in between the full tri-hourly saignes-weather.timer cycles so the "
-            "airport reading on the dashboard stays fresher than the forecast data."
+            "touching the forecast ensemble, irrigation decision, MetarReading/"
+            "IrrigationDecision history, or MQTT publish. Folded into --service's "
+            "hourly :30 cadence for normal operation; useful standalone for "
+            "manual/debugging refreshes."
         ),
     )
     p.add_argument(
@@ -2874,7 +2870,7 @@ def parse_args() -> argparse.Namespace:
             "sections, without touching the irrigation decision -- the 'irrigation' "
             "block (commanded percent/pump seconds/next-event schedule) is carried "
             "over unchanged from the existing cache -- and without writing "
-            "irrigation_history.csv, next_watering.json, or publishing to MQTT. "
+            "IrrigationDecision/next_watering.json rows or publishing to MQTT. "
             "For the dashboard's manual refresh button: lets a user pull fresh "
             "data on demand without the risk of a decision commit landing outside "
             "the normal 3-hourly cadence and silently consuming a due event that "
@@ -3062,6 +3058,7 @@ def run_current_only(args) -> int:
     status["metar_error"] = metar_err
 
     atomic_write_json(WEATHER_CACHE_JSON, report_obj)
+    append_metar_log_row(report_obj["current"], location.tz_name)
     print(
         f"current-only update: refreshed METAR current conditions in {WEATHER_CACHE_JSON} "
         f"(metar_ok={metar_err is None})"
@@ -3129,7 +3126,12 @@ def run_once(args) -> None:
             om_err=om_err,
         )
 
-        db_rows = read_irrigation_db(IRRIGATION_DB_CSV)
+        # Scoped to the currently-configured station -- otherwise switching
+        # station (dashboard settings panel) would seed the new location's
+        # schedule (next_watering_epoch, last-completed-event) off a
+        # different physical garden's prior history. Pre-station-tracking
+        # rows (station="") are excluded here too, not guessed at.
+        db_rows = IrrigationDecision.objects.filter(station=location.station)
         schedule = apply_irrigation_schedule(
             now_local=now_local,
             now_utc=now_utc,
@@ -3221,10 +3223,11 @@ def run_once(args) -> None:
         sys.stdout.flush()
 
         atomic_write_text(args.output, report)
-        upsert_irrigation_db_row(IRRIGATION_DB_CSV, schedule["db_row"])
+        upsert_irrigation_decision(schedule["db_row"])
         atomic_write_json(NEXT_WATERING_JSON, schedule["json_payload"])
         report_obj['next_run_epoch'] = next_quantized_run_epoch(now_local)
         atomic_write_json(WEATHER_CACHE_JSON, report_obj)
+        append_metar_log_row(report_obj.get("current"), location.tz_name)
 
         # Publish the next-two-events schedule to the pumps. A broker outage
         # must not fail the whole run (the JSON cache on disk is the source of
@@ -3250,14 +3253,14 @@ def run_fetch_only(args) -> int:
     ensemble/comparison sections from them, exactly like run_once -- but
     never touch the stateful irrigation-decision pipeline. apply_irrigation_
     schedule() is what decides a watering event is due and commits that to
-    irrigation_history.csv/next_watering.json (MQTT publish is downstream of
-    that same commit); calling it outside the normal 3-hourly cadence risks
-    an event coming due in between manual clicks and getting silently marked
-    complete without ever reaching a pump, since this path deliberately never
-    publishes. So the existing cache's 'irrigation' block (commanded percent/
-    pump seconds/next-event schedule) is carried over unchanged instead of
-    being recomputed, and irrigation_history.csv/next_watering.json/MQTT are
-    left untouched entirely."""
+    the IrrigationDecision table/next_watering.json (MQTT publish is
+    downstream of that same commit); calling it outside the normal 3-hourly
+    cadence risks an event coming due in between manual clicks and getting
+    silently marked complete without ever reaching a pump, since this path
+    deliberately never publishes. So the existing cache's 'irrigation' block
+    (commanded percent/pump seconds/next-event schedule) is carried over
+    unchanged instead of being recomputed, and the IrrigationDecision table/
+    next_watering.json/MQTT are left untouched entirely."""
     global HOURS_AHEAD
     HOURS_AHEAD = int(args.hours)
 
@@ -3362,13 +3365,74 @@ def run_fetch_only(args) -> int:
     return 0
 
 
+def _next_current_only_epoch(now_local: datetime) -> int:
+    """Next hourly :30 mark, local wall-clock -- run_service()'s replacement
+    for saignes-weather-current.timer's OnCalendar=*-*-* *:30:00."""
+    candidate = now_local.replace(minute=30, second=0, microsecond=0)
+    if candidate <= now_local:
+        candidate += timedelta(hours=1)
+    return int(candidate.timestamp())
+
+
+def run_service(args) -> int:
+    """Persistent replacement for saignes-weather.timer +
+    saignes-weather-current.timer + saignes-ack-listener.service: start the
+    MQTT ack subscriber once (same as --ack-listener), then loop forever,
+    sleeping until the next of {quantized tri-hourly boundary, hourly :30
+    mark} and running the matching cycle -- same cadence the two timers
+    produced, just internally scheduled instead of systemd re-invoking the
+    process. Each cycle is wrapped in its own try/except so a bad run can't
+    kill the loop or the ack-listener thread sharing this process -- the ack
+    subscriber runs on paho's own background thread via loop_start(), so it
+    stays responsive regardless of what this loop is doing."""
+    if MQTT_SEND_ENABLED:
+        client = start_ack_subscriber()
+        if client is None:
+            print("WARNING: ack subscriber unavailable; continuing without pump-ack tracking.", file=sys.stderr)
+    else:
+        print("WARNING: MQTT_SEND_ENABLED is False; no ack subscriber, no schedule publish.", file=sys.stderr)
+
+    while True:
+        now_local = datetime.now().astimezone()
+        next_cycle = next_quantized_run_epoch(now_local)
+        next_current = _next_current_only_epoch(now_local)
+        next_fire = min(next_cycle, next_current)
+        sleep_s = max(1.0, next_fire - now_local.timestamp())
+        print(f"run_service: sleeping {sleep_s:.0f}s until next fire ({datetime.fromtimestamp(next_fire).astimezone().isoformat(timespec='seconds')})", file=sys.stderr)
+        time.sleep(sleep_s)
+
+        now_local = datetime.now().astimezone()
+        due_cycle = now_local.timestamp() >= next_cycle - 1
+        due_current = now_local.timestamp() >= next_current - 1
+        # Pick up any station/broker/topic change made via the dashboard's
+        # config panel since the last cycle -- see refresh_site_config_
+        # overrides()'s docstring for why this can't just happen once at
+        # import time anymore. (A broker/topic change still won't move the
+        # ack subscriber's already-open connection to the new broker; only
+        # the next scheduled publish and the next location resolution pick
+        # up the change.)
+        refresh_site_config_overrides()
+        try:
+            if due_cycle:
+                run_once(args)
+            elif due_current:
+                run_current_only(args)
+        except Exception as e:
+            print(f"ERROR: run_service cycle failed ({type(e).__name__}: {e})", file=sys.stderr)
+
+
 def main() -> int:
     args = parse_args()
 
+    # Normal operation: one persistent process instead of systemd timers
+    # re-invoking the script. See run_service()'s docstring.
+    if args.service:
+        return run_service(args)
+
     # Pump acks can arrive at any time (a node wakes on its own schedule, or
     # executes a future-dated event hours after the forecast that scheduled
-    # it), so listening for them is a separate always-on daemon
-    # (saignes-ack-listener.service) rather than tied to the forecast cycle.
+    # it). --ack-listener runs just that, standalone, for debugging --
+    # normal operation gets it via --service above instead.
     if args.ack_listener:
         if not MQTT_SEND_ENABLED:
             print("ERROR: --ack-listener requires MQTT_SEND_ENABLED = True.", file=sys.stderr)
@@ -3384,21 +3448,20 @@ def main() -> int:
             client.loop_stop()
             return 130
 
-    # Hourly airport-ground-truth refresh, in between the tri-hourly full
-    # cycles below -- see saignes-weather-current.timer.
+    # Hourly airport-ground-truth refresh, standalone for manual/debugging use
+    # -- normal operation gets this via --service's hourly :30 cadence instead.
     if args.current_only:
         return run_current_only(args)
 
     # Manual on-demand refresh triggered from the dashboard -- fetches fresh
     # data from all sources but deliberately never touches the irrigation
-    # decision/CSV/MQTT publish. See run_fetch_only()'s docstring.
+    # decision/DB/MQTT publish. See run_fetch_only()'s docstring.
     if args.fetch_only:
         return run_fetch_only(args)
 
     # Forecast + irrigation-decision + MQTT-publish cycle: runs once and
-    # exits. saignes-weather.timer fires this at quantized wall-clock
-    # boundaries instead of the script looping with an internal sleep(), so a
-    # suspended/sleeping machine can't leave it desynced from the schedule.
+    # exits, standalone for manual/debugging use -- normal operation gets
+    # this via --service's quantized-boundary cadence instead.
     try:
         run_once(args)
     except Exception as e:

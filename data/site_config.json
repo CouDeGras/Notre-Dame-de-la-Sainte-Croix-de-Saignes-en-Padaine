@@ -1,6 +1,6 @@
 {
   "station": "ZSSS",
-  "broker": "",
-  "root_topic": "",
+  "broker": "broker.emqx.io:1883",
+  "root_topic": "notre_dame/sainte_croix/saignes_en_padaine",
   "lang": "en"
 }
