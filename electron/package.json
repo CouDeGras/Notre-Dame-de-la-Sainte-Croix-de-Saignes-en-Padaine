@@ -1,0 +1,34 @@
+{
+  "name": "saignes-en-padaine",
+  "productName": "Saignes-en-Padaine",
+  "version": "1.0.0",
+  "description": "Irrigation dashboard and weather/MQTT service, bundled as a self-contained Linux AppImage.",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "stage": "bash build-backend.sh",
+    "start": "electron .",
+    "build": "npm run stage && electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.0"
+  },
+  "build": {
+    "appId": "com.saignes-en-padaine.dashboard",
+    "productName": "Saignes-en-Padaine",
+    "files": [
+      "main.js",
+      "build/icon.png"
+    ],
+    "extraResources": [
+      { "from": "resources/app", "to": "app" },
+      { "from": "resources/venv", "to": "venv" }
+    ],
+    "linux": {
+      "target": "AppImage",
+      "icon": "build/icon.png",
+      "category": "Utility"
+    }
+  }
+}
