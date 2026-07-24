@@ -29,6 +29,7 @@
       "target": "AppImage",
       "icon": "build/icon.png",
       "category": "Utility"
-    }
+    },
+    "afterPack": "afterPack.js"
   }
 }
